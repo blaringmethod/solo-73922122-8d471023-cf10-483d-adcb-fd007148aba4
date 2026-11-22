@@ -1,0 +1,4 @@
+[
+  {"lease_id": "lease-daily-report", "name": "每日报表", "required_partitions": ["dt=2026-11-01", "dt=2026-11-02"]},
+  {"lease_id": "lease-ml-train", "name": "模型训练", "required_partitions": ["dt=2026-11-02", "dt=2026-11-03"]}
+]

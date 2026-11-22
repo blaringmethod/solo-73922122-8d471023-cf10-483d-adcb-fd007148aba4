@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>活动查询租约</h1>
+
+<section class="panel">
+  <h2>新建租约</h2>
+  <form method="post" action="/web/leases">
+    <label>租约 ID <input name="lease_id" required placeholder="lease-daily-report"></label>
+    <label>名称 <input name="name" required placeholder="每日报表查询"></label>
+    <label>所需分区(逗号或换行分隔)
+      <textarea name="partitions" rows="3" placeholder="dt=2026-11-01, dt=2026-11-02"></textarea>
+    </label>
+    <button class="primary" type="submit">创建</button>
+  </form>
+</section>
+
+{% if leases %}
+<table>
+  <tr><th>租约</th><th>名称 / 所需分区</th><th>版本</th><th>更新时间</th><th></th></tr>
+  {% for l in leases %}
+  <tr>
+    <td><code>{{ l.lease_id }}</code></td>
+    <td>
+      <form method="post" action="/web/leases/{{ l.lease_id }}/update">
+        <input name="name" value="{{ l.name }}">
+        <textarea name="partitions" rows="2">{{ l.required_partitions|join(', ') }}</textarea>
+        <button type="submit">保存(版本+1)</button>
+      </form>
+    </td>
+    <td>v{{ l.version }}</td>
+    <td>{{ l.updated_at }}</td>
+    <td>
+      <form method="post" action="/web/leases/{{ l.lease_id }}/delete" class="inline"
+            onsubmit="return confirm('删除租约会使旧方案过期, 确定?')">
+        <button type="submit" class="danger">删除</button>
+      </form>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+<p class="hint">租约的任何修改都会递增版本号, 并使所有未确认方案过期(STALE)。</p>
+{% else %}
+<p class="hint">暂无租约。</p>
+{% endif %}
+{% endblock %}

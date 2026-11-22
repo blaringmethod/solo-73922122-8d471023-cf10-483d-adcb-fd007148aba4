@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>方案 {{ plan.plan_id }} <span class="badge st-{{ plan.status }}">{{ plan.status }}</span></h1>
+<p>生成于 {{ plan.created_at }} · 登记表指纹 <code>{{ plan.fingerprint[:16] }}…</code>
+{% if plan.confirmed_at %} · 确认于 {{ plan.confirmed_at }}{% endif %}</p>
+
+{% if plan.status == 'STALE' %}
+<div class="flash err">快照或租约在此方案生成后发生了变化, 方案已过期, 请重新计算。</div>
+{% endif %}
+{% if plan.status == 'BLOCKED' %}
+<div class="flash err">方案存在校验问题, 不能确认。请先解决下列问题后重新计算。</div>
+{% endif %}
+
+<div class="actions">
+{% if plan.status == 'DRAFT' %}
+<form method="post" action="/web/plans/{{ plan.plan_id }}/confirm" class="inline"
+      onsubmit="return confirm('确认前将重新核对清单摘要, 确定?')">
+  <button class="primary" type="submit">确认方案(重新核对清单摘要)</button>
+</form>
+{% endif %}
+<form method="post" action="/web/plans/compute" class="inline">
+  <button type="submit">按当前登记表重新计算</button>
+</form>
+</div>
+
+{% if p.issues %}
+<h2>校验问题 ({{ p.issues|length }})</h2>
+<ul class="issues">
+  {% for i in p.issues %}<li><code>{{ i.type }}</code> — {{ i.message }}</li>{% endfor %}
+</ul>
+{% endif %}
+
+<h2>租约覆盖方案(最小快照集合)</h2>
+{% if p.per_lease %}
+<table>
+  <tr><th>租约</th><th>所需分区</th><th>选中的快照 → 覆盖分区</th><th>未覆盖</th></tr>
+  {% for l in p.per_lease %}
+  <tr>
+    <td>{{ l.name }}<br><code>{{ l.lease_id }}</code></td>
+    <td>{% for x in l.required %}<span class="tag">{{ x }}</span>{% endfor %}</td>
+    <td>
+      {% if l.chosen %}
+        {% for c in l.chosen %}
+        <div><code>{{ c.snapshot_id }}</code> → {% for x in c.covers %}<span class="tag ok">{{ x }}</span>{% endfor %}</div>
+        {% endfor %}
+      {% else %}<span class="muted">无需覆盖</span>{% endif %}
+    </td>
+    <td>{% for x in l.uncovered %}<span class="tag bad">{{ x }}</span>{% else %}<span class="muted">无</span>{% endfor %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}<p class="muted">无活动租约。</p>{% endif %}
+
+<h2>保留集合与原因</h2>
+{% if p.keep %}
+<table>
+  <tr><th>快照</th><th>保留原因</th></tr>
+  {% for k in p.keep %}
+  <tr><td><code>{{ k.snapshot_id }}</code></td><td>{% for r in k.reasons %}<div>· {{ r }}</div>{% endfor %}</td></tr>
+  {% endfor %}
+</table>
+{% else %}<p class="muted">无租约或规则要求保留的快照。</p>{% endif %}
+{% if p.protected %}
+<p>受保护(未完成): {% for x in p.protected %}<span class="tag warn">{{ x.snapshot_id }}</span>{% endfor %} — {{ p.protected[0].reason }}</p>
+{% endif %}
+
+<h2>分区覆盖矩阵</h2>
+<table>
+  <tr><th>分区</th><th>租约需求</th>{% for sid in snap_columns %}<th>{{ sid }}</th>{% endfor %}</tr>
+  {% for row in p.coverage %}
+  <tr>
+    <td><code>{{ row.partition }}</code></td>
+    <td>{% for n in row.leases %}<span class="tag">{{ n }}</span>{% else %}<span class="muted">—</span>{% endfor %}</td>
+    {% for sid in snap_columns %}
+    <td class="center">
+      {% set st = row.snapshots.get(sid) %}
+      {% if st == 'complete' %}<span class="dot ok" title="已完成">●</span>
+      {% elif st == 'in_progress' %}<span class="dot warn" title="未完成">◐</span>
+      {% else %}<span class="muted">·</span>{% endif %}
+    </td>
+    {% endfor %}
+  </tr>
+  {% endfor %}
+</table>
+<p class="hint">● 已完成快照覆盖 · ◐ 未完成快照覆盖(不能纳入方案) · 有租约需求但无 ● 的分区会阻断确认。</p>
+
+<h2>共享文件为何必须保留 ({{ p.shared_files|length }})</h2>
+{% if p.shared_files %}
+<table>
+  <tr><th>文件</th><th>字节</th><th>引用链(文件 → 快照 → 分区 → 租约)</th><th>结论</th></tr>
+  {% for f in p.shared_files %}
+  <tr>
+    <td><code>{{ f.path }}</code></td>
+    <td>{{ f.size_bytes }}</td>
+    <td>
+      快照: {% for s in f.referenced_by %}<span class="tag {{ 'ok' if s in f.retained_by }}">{{ s }}</span>{% endfor %}<br>
+      分区: {% for x in f.partitions %}<span class="tag">{{ x }}</span>{% endfor %}<br>
+      租约: {% for n in f.leases %}<span class="tag">{{ n }}</span>{% else %}<span class="muted">—</span>{% endfor %}
+    </td>
+    <td>{{ f.reason }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}<p class="muted">没有被多个快照共享且需保留的文件。</p>{% endif %}
+
+<h2>可释放候选</h2>
+<p>可释放快照:
+  {% for s in p.releasable_snapshots %}<span class="tag bad">{{ s }}</span>{% else %}<span class="muted">无</span>{% endfor %}
+  · 可释放文件 {{ p.totals.releasable_file_count }} 个, 合计 {{ p.totals.releasable_bytes }} 字节
+  (保留中文件合计 {{ p.totals.retained_bytes }} 字节)
+</p>
+{% if p.releasable_files %}
+<table>
+  <tr><th>文件</th><th>字节</th><th>仅被以下可释放快照引用</th></tr>
+  {% for f in p.releasable_files %}
+  <tr>
+    <td><code>{{ f.path }}</code></td>
+    <td>{{ f.size_bytes }}</td>
+    <td>{% for s in f.referenced_by %}<span class="tag bad">{{ s }}</span>{% endfor %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<h2>完整文件引用链 ({{ p.files|length }} 个文件)</h2>
+<table>
+  <tr><th>文件</th><th>字节</th><th>引用快照</th><th>处置</th></tr>
+  {% for f in p.files %}
+  <tr>
+    <td><code>{{ f.path }}</code></td>
+    <td>{{ f.size_bytes }}</td>
+    <td>{% for s in f.referenced_by %}<span class="tag {{ 'ok' if s in f.retained_by else 'bad' }}">{{ s }}</span>{% endfor %}</td>
+    <td>
+      {% if f.must_retain %}<span class="badge ok">保留{{ '·共享' if f.shared }}</span>
+      {% elif f.releasable %}<span class="badge bad">可释放</span>
+      {% else %}<span class="badge warn">待释放快照完成后处理</span>{% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+
+<h2>方案核对清单(确认时重新校验)</h2>
+<table>
+  <tr><th>快照</th><th>登记摘要(方案生成时)</th></tr>
+  {% for sid, digest in p.snapshot_digests.items()|sort %}
+  <tr><td><code>{{ sid }}</code></td><td><code>{{ digest[:32] }}…</code></td></tr>
+  {% endfor %}
+</table>
+{% endblock %}

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}数据湖快照保留规划{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<nav>
+  <span class="brand">数据湖快照保留规划</span>
+  <a href="/">仪表盘</a>
+  <a href="/snapshots">快照</a>
+  <a href="/leases">租约</a>
+  <a href="/rules">保留规则</a>
+  <a href="/plans">方案</a>
+</nav>
+<main>
+{% if msg %}
+<div class="flash {{ 'ok' if ok else 'err' }}">{{ msg }}</div>
+{% endif %}
+{% block content %}{% endblock %}
+</main>
+<footer>快照上限 {{ max_snapshots }} 个 · 方案确认前会重新核对清单摘要</footer>
+</body>
+</html>

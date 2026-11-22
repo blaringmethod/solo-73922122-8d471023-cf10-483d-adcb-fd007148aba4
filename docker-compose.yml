@@ -1,0 +1,14 @@
+services:
+  web:
+    build: .
+    image: snapshot-retention-planner
+    ports:
+      - "8000:8000"
+    environment:
+      RETENTION_DB: /data/retention.db
+    volumes:
+      - retention-data:/data
+    restart: unless-stopped
+
+volumes:
+  retention-data:

@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>保留规则</h1>
+<section class="panel">
+  <form method="post" action="/web/rules">
+    <label>至少保留最近 N 个已完成快照(0 = 不启用)
+      <input type="number" name="min_snapshots" min="0" max="12" value="{{ rules.min_snapshots }}">
+    </label>
+    <label>创建时间在 N 天内的快照一律保留(0 = 不启用)
+      <input type="number" name="protect_days" min="0" max="3650" value="{{ rules.protect_days }}">
+    </label>
+    <button class="primary" type="submit">保存规则</button>
+  </form>
+  <p class="hint">规则在租约覆盖之外额外保留快照;修改规则同样会使旧方案过期。未完成(IN_PROGRESS)快照始终受保护, 不会被列为可释放。</p>
+</section>
+{% endblock %}

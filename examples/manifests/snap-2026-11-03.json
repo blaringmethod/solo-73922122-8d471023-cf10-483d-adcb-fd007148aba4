@@ -1,0 +1,10 @@
+{
+  "snapshot_id": "snap-2026-11-03",
+  "created_at": "2026-11-03T02:00:00Z",
+  "status": "COMPLETE",
+  "files": [
+    {"path": "lake/orders/dt=2026-11-02/part-0.parquet", "size_bytes": 910000, "partitions": ["dt=2026-11-02"]},
+    {"path": "lake/orders/dt=2026-11-03/part-0.parquet", "size_bytes": 870000, "partitions": ["dt=2026-11-03"]},
+    {"path": "lake/orders/_meta/schema-v2.json", "size_bytes": 5000, "partitions": ["dt=2026-11-03"]}
+  ]
+}

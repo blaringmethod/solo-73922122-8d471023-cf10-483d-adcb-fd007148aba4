@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>快照 manifest ({{ snapshots|length }} / {{ max_snapshots }})</h1>
+
+<section class="panel">
+  <h2>上传 manifest</h2>
+  <form method="post" action="/web/snapshots" enctype="multipart/form-data">
+    <label>JSON 文件 <input type="file" name="manifest_file" accept=".json,application/json"></label>
+    <label>或粘贴 JSON
+      <textarea name="manifest_text" rows="8" placeholder='{"snapshot_id":"s1","created_at":"2026-11-01T00:00:00Z","status":"COMPLETE","files":[{"path":"data/dt=2026-11-01/p0.parquet","size_bytes":1024,"partitions":["dt=2026-11-01"]}]}'></textarea>
+    </label>
+    <button class="primary" type="submit">登记快照</button>
+  </form>
+  <p class="hint">重复上传同一 snapshot_id 会替换 manifest 并改变摘要, 使旧方案过期。最多 {{ max_snapshots }} 个。</p>
+</section>
+
+{% if snapshots %}
+<table>
+  <tr><th>快照</th><th>状态</th><th>创建时间</th><th>文件数</th><th>总字节</th><th>清单摘要</th><th>登记时间</th><th></th></tr>
+  {% for s in snapshots %}
+  <tr>
+    <td><a href="/snapshots/{{ s.snapshot_id }}">{{ s.snapshot_id }}</a></td>
+    <td><span class="badge {{ 'ok' if s.status == 'COMPLETE' else 'warn' }}">{{ s.status }}</span></td>
+    <td>{{ s.created_at }}</td>
+    <td>{{ s.files|length }}</td>
+    <td>{{ s.files|sum(attribute='size_bytes') }}</td>
+    <td><code>{{ s.digest[:16] }}…</code></td>
+    <td>{{ s.uploaded_at }}</td>
+    <td>
+      <form method="post" action="/web/snapshots/{{ s.snapshot_id }}/delete" class="inline"
+            onsubmit="return confirm('移除 manifest 会使旧方案过期, 确定?')">
+        <button type="submit" class="danger">移除</button>
+      </form>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="hint">尚未登记任何快照。</p>
+{% endif %}
+{% endblock %}

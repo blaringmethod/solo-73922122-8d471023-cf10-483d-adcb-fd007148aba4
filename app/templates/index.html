@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>仪表盘</h1>
+<div class="cards">
+  <div class="card"><div class="num">{{ snapshots|length }} / {{ max_snapshots }}</div><div>已登记快照 manifest</div><a href="/snapshots">管理 →</a></div>
+  <div class="card"><div class="num">{{ leases|length }}</div><div>活动查询租约</div><a href="/leases">管理 →</a></div>
+  <div class="card"><div class="num">{{ rules.min_snapshots }} / {{ rules.protect_days }}天</div><div>保留规则(最少快照 / 保护期)</div><a href="/rules">调整 →</a></div>
+  <div class="card">
+    {% if latest %}
+    <div class="num"><span class="badge st-{{ latest.status }}">{{ latest.status }}</span></div>
+    <div>最新方案 {{ latest.plan_id }} · {{ latest.created_at }}</div>
+    <a href="/plans/{{ latest.plan_id }}">查看 →</a>
+    {% else %}
+    <div class="num">—</div><div>尚未生成方案</div>
+    {% endif %}
+  </div>
+</div>
+
+<form method="post" action="/web/plans/compute" class="inline">
+  <button class="primary" type="submit">按当前登记表计算新方案</button>
+</form>
+
+{% if latest and latest.payload.issues %}
+<h2>最新方案的校验问题</h2>
+<ul class="issues">
+  {% for i in latest.payload.issues %}<li>{{ i.message }}</li>{% endfor %}
+</ul>
+{% endif %}
+
+{% if plans %}
+<h2>最近方案</h2>
+<table>
+  <tr><th>方案</th><th>生成时间</th><th>状态</th><th>校验问题</th><th>确认时间</th></tr>
+  {% for pl in plans %}
+  <tr>
+    <td><a href="/plans/{{ pl.plan_id }}">{{ pl.plan_id }}</a></td>
+    <td>{{ pl.created_at }}</td>
+    <td><span class="badge st-{{ pl.status }}">{{ pl.status }}</span></td>
+    <td>{{ pl.payload.issues|length }}</td>
+    <td>{{ pl.confirmed_at or '—' }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% endblock %}

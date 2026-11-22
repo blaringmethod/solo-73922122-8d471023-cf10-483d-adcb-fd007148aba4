@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>保留方案</h1>
+<form method="post" action="/web/plans/compute" class="inline">
+  <button class="primary" type="submit">按当前登记表计算新方案</button>
+</form>
+
+{% if plans %}
+<table>
+  <tr><th>方案</th><th>生成时间</th><th>状态</th><th>校验问题</th><th>保留快照</th><th>可释放快照</th><th>确认时间</th></tr>
+  {% for pl in plans %}
+  <tr>
+    <td><a href="/plans/{{ pl.plan_id }}">{{ pl.plan_id }}</a></td>
+    <td>{{ pl.created_at }}</td>
+    <td><span class="badge st-{{ pl.status }}">{{ pl.status }}</span></td>
+    <td>{{ pl.payload.issues|length }}</td>
+    <td>{{ pl.payload.keep|length }}</td>
+    <td>{{ pl.payload.releasable_snapshots|length }}</td>
+    <td>{{ pl.confirmed_at or '—' }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="hint">尚未生成方案。</p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>快照 {{ snap.snapshot_id }}</h1>
+<p>
+  状态 <span class="badge {{ 'ok' if snap.status == 'COMPLETE' else 'warn' }}">{{ snap.status }}</span>
+  · 创建于 {{ snap.created_at }} · 登记于 {{ snap.uploaded_at }}<br>
+  清单摘要 <code>{{ snap.digest }}</code>
+</p>
+<h2>文件与分区 ({{ snap.files|length }})</h2>
+<table>
+  <tr><th>文件路径</th><th>字节</th><th>分区</th></tr>
+  {% for f in snap.files %}
+  <tr>
+    <td><code>{{ f.path }}</code></td>
+    <td>{{ f.size_bytes }}</td>
+    <td>{% for p in f.partitions %}<span class="tag">{{ p }}</span>{% endfor %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}
