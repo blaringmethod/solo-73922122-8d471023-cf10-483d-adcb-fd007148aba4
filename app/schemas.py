@@ -57,3 +57,8 @@ class LeaseIn(BaseModel):
 class RulesIn(BaseModel):
     min_snapshots: int = Field(ge=0, le=12)
     protect_days: int = Field(ge=0, le=3650)
+
+
+class PathSwitchIn(BaseModel):
+    old_prefix: str = Field(min_length=1, max_length=1024)
+    new_prefix: str = Field(min_length=1, max_length=1024)

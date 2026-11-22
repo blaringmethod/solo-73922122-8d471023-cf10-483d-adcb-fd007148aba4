@@ -21,8 +21,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
-from . import db, planner
-from .schemas import LeaseIn, Manifest, RulesIn
+from . import db, path_switch, paths, planner
+from .schemas import LeaseIn, Manifest, PathSwitchIn, RulesIn
 
 BASE_DIR = Path(__file__).resolve().parent
 MAX_SNAPSHOTS = planner.MAX_SNAPSHOTS
@@ -72,6 +72,7 @@ def create_app(db_path: str | None = None) -> FastAPI:
         return RedirectResponse(url, status_code=303)
 
     def load_registry(c):
+        db.begin(c)                      # 读事务: 一整套路径/摘要要么全在切换前, 要么全在切换后
         snapshots = [db.snapshot_obj(r) for r in db.list_snapshots(c)]
         leases = [db.lease_obj(r) for r in db.list_leases(c)]
         rules = db.get_rules(c)
@@ -81,16 +82,18 @@ def create_app(db_path: str | None = None) -> FastAPI:
         snapshots, leases, rules = load_registry(c)
         return planner.registry_fingerprint(snapshots, leases, rules)
 
-    def refresh_plan(c, plan: dict) -> dict:
+    def refresh_plan(c, plan: dict, commit: bool = True) -> dict:
         """登记表已变化时把未确认方案惰性标记为 STALE。"""
         if plan["status"] in ("DRAFT", "BLOCKED"):
             if current_fingerprint(c) != plan["fingerprint"]:
                 db.set_plan_status(c, plan["plan_id"], "STALE")
-                c.commit()
+                if commit:
+                    c.commit()
                 plan = db.get_plan(c, plan["plan_id"])
         return plan
 
     def compute_and_store(c) -> str:
+        db.begin(c, write=True)          # 与目录切换互斥, 只看到切换前或切换后的一整套
         snapshots, leases, rules = load_registry(c)
         payload = planner.compute_plan(snapshots, leases, rules)
         fp = planner.registry_fingerprint(snapshots, leases, rules)
@@ -102,17 +105,22 @@ def create_app(db_path: str | None = None) -> FastAPI:
 
     def do_confirm(c, plan_id: str) -> tuple[int, dict]:
         """确认方案。失败时只返回错误,快照登记保持不变。"""
+        db.begin(c, write=True)
         plan = db.get_plan(c, plan_id)
         if plan is None:
+            c.rollback()
             return 404, {"detail": "方案不存在"}
         if plan["status"] == "CONFIRMED":
+            c.rollback()
             return 200, {"detail": "方案已确认", "plan_id": plan_id, "status": "CONFIRMED"}
-        plan = refresh_plan(c, plan)
+        plan = refresh_plan(c, plan, commit=False)
         if plan["status"] == "STALE":
+            c.commit()                  # 保留惰性过期标记
             return 409, {"detail": "快照或租约已变化, 方案已过期, 请重新计算",
                          "plan_id": plan_id, "status": "STALE"}
         payload = plan["payload"]
         if payload["issues"]:
+            c.rollback()
             return 422, {"detail": "方案存在校验问题, 不能确认",
                          "issues": payload["issues"],
                          "plan_id": plan_id, "status": plan["status"]}
@@ -125,29 +133,43 @@ def create_app(db_path: str | None = None) -> FastAPI:
             elif row["digest"] != digest:
                 mismatches.append({"snapshot_id": sid, "problem": "manifest 摘要不匹配"})
         if mismatches:
+            c.rollback()
             return 409, {"detail": "清单摘要核对失败, 快照登记未改动",
                          "mismatches": mismatches, "plan_id": plan_id}
         db.set_plan_status(c, plan_id, "CONFIRMED", confirmed_at=utcnow())
         c.commit()
         return 200, {"detail": "方案已确认", "plan_id": plan_id, "status": "CONFIRMED"}
 
-    def register_manifest(c, manifest: Manifest) -> str:
+    def register_manifest(c, manifest: Manifest) -> tuple[str, list[dict]]:
+        """登记 manifest; 换址后迟到的旧路径清单按新路径登记。
+
+        返回 (摘要, 改写明细)。改写后重复路径由 paths 层拒绝, 登记不写入。
+        """
+        db.begin(c, write=True)          # 与目录切换互斥: 转换与写入必须看到同一前缀对
         if (db.get_snapshot(c, manifest.snapshot_id) is None
                 and db.count_snapshots(c) >= MAX_SNAPSHOTS):
+            c.rollback()
             raise HTTPException(400, f"最多登记 {MAX_SNAPSHOTS} 个快照 manifest")
         data = manifest.model_dump()
+        try:
+            data, rewrites, _ = path_switch.convert_for_registration(c, data)
+        except paths.DuplicateAfterRewrite:
+            c.rollback()
+            raise
         digest = planner.canonical_digest(data)
         db.upsert_snapshot(c, data, digest, utcnow())
         c.commit()
-        return digest
+        return digest, rewrites
 
     # ============================================================ 网页
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request):
         with closing(connect()) as c:
+            db.begin(c, write=True)      # 惰性过期标记需要写事务
             snapshots, leases, rules = load_registry(c)
             plans = db.list_plans(c, limit=5)
-            latest = refresh_plan(c, plans[0]) if plans else None
+            latest = refresh_plan(c, plans[0], commit=False) if plans else None
+            c.commit()
         return templates.TemplateResponse(request, "index.html", ctx(
             request, snapshots=snapshots, leases=leases, rules=rules,
             plans=plans, latest=latest))
@@ -157,16 +179,10 @@ def create_app(db_path: str | None = None) -> FastAPI:
     def snapshots_page(request: Request):
         with closing(connect()) as c:
             snapshots, _, _ = load_registry(c)
-        return templates.TemplateResponse(request, "snapshots.html", ctx(request, snapshots=snapshots))
-
-    @app.get("/snapshots/{sid}", response_class=HTMLResponse)
-    def snapshot_detail(request: Request, sid: str):
-        with closing(connect()) as c:
-            row = db.get_snapshot(c, sid)
-            if row is None:
-                raise HTTPException(404, "快照不存在")
-            snap = db.snapshot_obj(row)
-        return templates.TemplateResponse(request, "snapshot_detail.html", ctx(request, snap=snap))
+            switch = db.get_path_switch(c)
+            c.rollback()
+        return templates.TemplateResponse(request, "snapshots.html", ctx(
+            request, snapshots=snapshots, switch=switch))
 
     @app.post("/web/snapshots")
     async def web_upload_snapshot(request: Request,
@@ -191,10 +207,16 @@ def create_app(db_path: str | None = None) -> FastAPI:
             return redirect("/snapshots", f"manifest 校验失败: {loc}: {first['msg']}", ok=False)
         with closing(connect()) as c:
             try:
-                digest = register_manifest(c, manifest)
+                digest, rewrites = register_manifest(c, manifest)
+            except paths.DuplicateAfterRewrite as e:
+                return redirect("/snapshots", f"登记被退回: {e}", ok=False)
             except HTTPException as e:
                 return redirect("/snapshots", str(e.detail), ok=False)
-        return redirect("/snapshots", f"快照 {manifest.snapshot_id} 已登记 (摘要 {digest[:12]}…)")
+        note = ""
+        if rewrites:
+            note = f" (迟到清单: {len(rewrites)} 个旧路径已按新前缀登记)"
+        return redirect("/snapshots",
+                        f"快照 {manifest.snapshot_id} 已登记 (摘要 {digest[:12]}…){note}")
 
     @app.post("/web/snapshots/{sid}/delete")
     def web_delete_snapshot(sid: str):
@@ -203,6 +225,49 @@ def create_app(db_path: str | None = None) -> FastAPI:
                 return redirect("/snapshots", f"快照 {sid} 不存在", ok=False)
             c.commit()
         return redirect("/snapshots", f"快照 {sid} 的 manifest 已移除, 旧方案随之过期")
+
+    @app.get("/snapshots/{sid}", response_class=HTMLResponse)
+    def snapshot_detail(request: Request, sid: str):
+        with closing(connect()) as c:
+            db.begin(c)
+            row = db.get_snapshot(c, sid)
+            if row is None:
+                c.rollback()
+                raise HTTPException(404, "快照不存在")
+            snap = db.snapshot_obj(row)
+            switch = db.get_path_switch(c)
+            c.rollback()
+        return templates.TemplateResponse(request, "snapshot_detail.html", ctx(
+            request, snap=snap, switch=switch))
+
+    @app.get("/path-switch", response_class=HTMLResponse)
+    def web_path_switch_preview(request: Request, old_prefix: str = "",
+                                new_prefix: str = ""):
+        result = None
+        if old_prefix.strip() and new_prefix.strip():
+            with closing(connect()) as c:
+                try:
+                    result = path_switch.preview(c, old_prefix, new_prefix)
+                except paths.PathSwitchError as e:
+                    result = {"status": "invalid", "message": str(e),
+                              "old_prefix": old_prefix, "new_prefix": new_prefix}
+                if result["status"] == "preview":
+                    result["blocked"] = result.get("blocked", False)
+        elif old_prefix or new_prefix:
+            result = {"status": "invalid", "message": "请同时填写新旧目录前缀",
+                      "old_prefix": old_prefix, "new_prefix": new_prefix}
+        return templates.TemplateResponse(request, "path_switch_preview.html", ctx(
+            request, result=result, old_prefix=old_prefix, new_prefix=new_prefix))
+
+    @app.post("/web/path-switch")
+    def web_path_switch(old_prefix: str = Form(...), new_prefix: str = Form(...)):
+        with closing(connect()) as c:
+            try:
+                code, body = path_switch.apply_switch(c, old_prefix, new_prefix, utcnow())
+            except paths.PathSwitchError as e:
+                return redirect("/snapshots", str(e), ok=False)
+        return redirect("/snapshots", body.get("detail") or body.get("message"),
+                        ok=(code == 200))
 
     # ---- 租约
     @app.get("/leases", response_class=HTMLResponse)
@@ -267,7 +332,9 @@ def create_app(db_path: str | None = None) -> FastAPI:
     @app.get("/plans", response_class=HTMLResponse)
     def plans_page(request: Request):
         with closing(connect()) as c:
-            plans = [refresh_plan(c, p) for p in db.list_plans(c)]
+            db.begin(c, write=True)
+            plans = [refresh_plan(c, p, commit=False) for p in db.list_plans(c)]
+            c.commit()
         return templates.TemplateResponse(request, "plans.html", ctx(request, plans=plans))
 
     @app.post("/web/plans/compute")
@@ -279,10 +346,13 @@ def create_app(db_path: str | None = None) -> FastAPI:
     @app.get("/plans/{plan_id}", response_class=HTMLResponse)
     def plan_detail(request: Request, plan_id: str):
         with closing(connect()) as c:
+            db.begin(c, write=True)
             plan = db.get_plan(c, plan_id)
             if plan is None:
+                c.rollback()
                 raise HTTPException(404, "方案不存在")
-            plan = refresh_plan(c, plan)
+            plan = refresh_plan(c, plan, commit=False)
+            c.commit()
         payload = plan["payload"]
         return templates.TemplateResponse(request, "plan_detail.html", ctx(
             request, plan=plan, p=payload,
@@ -300,22 +370,35 @@ def create_app(db_path: str | None = None) -> FastAPI:
     @app.post("/api/snapshots", status_code=201)
     def api_upload_snapshot(manifest: Manifest):
         with closing(connect()) as c:
-            digest = register_manifest(c, manifest)
-        return {"snapshot_id": manifest.snapshot_id, "digest": digest}
+            try:
+                digest, rewrites = register_manifest(c, manifest)
+            except paths.DuplicateAfterRewrite as e:
+                raise HTTPException(409, {
+                    "detail": "登记被退回: 转换后出现重复路径, 未写入",
+                    "duplicates": e.duplicates})
+        body = {"snapshot_id": manifest.snapshot_id, "digest": digest}
+        if rewrites:
+            body["rewritten_paths"] = rewrites
+        return body
 
     @app.get("/api/snapshots")
     def api_list_snapshots():
         with closing(connect()) as c:
             snapshots, _, _ = load_registry(c)
+            c.rollback()
         return {"snapshots": snapshots, "count": len(snapshots), "max": MAX_SNAPSHOTS}
 
     @app.get("/api/snapshots/{sid}")
     def api_get_snapshot(sid: str):
         with closing(connect()) as c:
+            db.begin(c)
             row = db.get_snapshot(c, sid)
             if row is None:
+                c.rollback()
                 raise HTTPException(404, "快照不存在")
-            return db.snapshot_obj(row)
+            snap = db.snapshot_obj(row)
+            c.rollback()
+            return snap
 
     @app.delete("/api/snapshots/{sid}")
     def api_delete_snapshot(sid: str):
@@ -371,6 +454,35 @@ def create_app(db_path: str | None = None) -> FastAPI:
         return {"min_snapshots": rules.min_snapshots,
                 "protect_days": rules.protect_days}
 
+    # ---- 目录换址
+    @app.get("/api/path-switch")
+    def api_get_path_switch():
+        with closing(connect()) as c:
+            db.begin(c)
+            switch = db.get_path_switch(c)
+            c.rollback()
+        return {"switch": switch}
+
+    @app.post("/api/path-switch/preview")
+    def api_path_switch_preview(body: PathSwitchIn):
+        with closing(connect()) as c:
+            try:
+                return path_switch.preview(c, body.old_prefix, body.new_prefix)
+            except paths.PathSwitchError as e:
+                raise HTTPException(400, str(e))
+
+    @app.post("/api/path-switch")
+    def api_path_switch(body: PathSwitchIn):
+        with closing(connect()) as c:
+            try:
+                code, result = path_switch.apply_switch(
+                    c, body.old_prefix, body.new_prefix, utcnow())
+            except paths.PathSwitchError as e:
+                raise HTTPException(400, str(e))
+        if code >= 400:
+            raise HTTPException(code, result)
+        return result
+
     @app.post("/api/plans", status_code=201)
     def api_compute_plan():
         with closing(connect()) as c:
@@ -381,15 +493,22 @@ def create_app(db_path: str | None = None) -> FastAPI:
     @app.get("/api/plans")
     def api_list_plans():
         with closing(connect()) as c:
-            return {"plans": [refresh_plan(c, p) for p in db.list_plans(c)]}
+            db.begin(c, write=True)
+            plans = [refresh_plan(c, p, commit=False) for p in db.list_plans(c)]
+            c.commit()
+        return {"plans": plans}
 
     @app.get("/api/plans/{plan_id}")
     def api_get_plan(plan_id: str):
         with closing(connect()) as c:
+            db.begin(c, write=True)
             plan = db.get_plan(c, plan_id)
             if plan is None:
+                c.rollback()
                 raise HTTPException(404, "方案不存在")
-            return refresh_plan(c, plan)
+            plan = refresh_plan(c, plan, commit=False)
+            c.commit()
+        return plan
 
     @app.post("/api/plans/{plan_id}/confirm")
     def api_confirm_plan(plan_id: str):

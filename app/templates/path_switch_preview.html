@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>目录换址核对</h1>
+<p><a href="/snapshots">← 返回快照页</a></p>
+
+{% if not result %}
+<p class="hint">填写新旧目录前缀以核对将要改写的清单。</p>
+{% elif result.status == 'invalid' %}
+<div class="flash err">{{ result.message }}</div>
+{% elif result.status == 'already_switched' %}
+<div class="flash ok">{{ result.message }}</div>
+{% elif result.status == 'pair_locked' %}
+<div class="flash err">{{ result.message }}</div>
+{% else %}
+<p>
+  前缀 <code>{{ result.old_prefix }}</code> → <code>{{ result.new_prefix }}</code>
+  · 清单 {{ result.snapshot_count }} 个(受影响 {{ result.affected_snapshots }} 个)
+  · 将改写 {{ result.rewritten_paths }} 个文件路径
+</p>
+{% if result.blocked %}
+<div class="flash err">
+  <strong>不能切换, 清单将保持原路径。</strong>
+  {% if result.conflicts %}
+  <div>已有清单引用新目录:
+    {% for c in result.conflicts %}<span class="tag bad">{{ c.snapshot_id }}</span>{% endfor %}
+  </div>
+  {% endif %}
+  {% if result.duplicates %}
+  <div>转换后出现重复路径:
+    {% for d in result.duplicates %}<span class="tag bad">{{ d.snapshot_id }}</span>{% endfor %}
+  </div>
+  {% endif %}
+</div>
+{% else %}
+<div class="flash ok">核对通过, 可以切换。切换以点击时已提交的清单为准。</div>
+<form method="post" action="/web/path-switch"
+      onsubmit="return confirm('切换会改写全部清单中的旧路径, 并使涉及旧路径的草稿方案过期, 确定?')">
+  <input type="hidden" name="old_prefix" value="{{ result.old_prefix }}">
+  <input type="hidden" name="new_prefix" value="{{ result.new_prefix }}">
+  <button class="primary" type="submit">执行切换: {{ result.old_prefix }} → {{ result.new_prefix }}</button>
+</form>
+{% endif %}
+
+<h2>各清单改写预览</h2>
+<table>
+  <tr><th>快照</th><th>改写</th><th>原摘要 → 新摘要</th><th>冲突 / 重复</th></tr>
+  {% for s in result.snapshots %}
+  <tr>
+    <td><code>{{ s.snapshot_id }}</code></td>
+    <td>
+      {% if s.rewrites %}
+        {% for r in s.rewrites %}<div><code>{{ r.from }}</code> → <code class="tag ok">{{ r.to }}</code></div>{% endfor %}
+      {% else %}<span class="muted">无需改写</span>{% endif %}
+    </td>
+    <td><code>{{ s.old_digest[:12] }}…</code> → <code>{{ s.new_digest[:12] }}…</code></td>
+    <td>
+      {% for p in s.conflict_paths %}<div><span class="tag bad">已在新目录</span> <code>{{ p }}</code></div>{% endfor %}
+      {% for p in s.duplicate_paths %}<div><span class="tag bad">重复</span> <code>{{ p }}</code></div>{% endfor %}
+      {% if not s.conflict_paths and not s.duplicate_paths %}<span class="muted">—</span>{% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% endblock %}

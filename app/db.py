@@ -52,6 +52,12 @@ CREATE TABLE IF NOT EXISTS plans (
     payload_json TEXT NOT NULL,
     confirmed_at TEXT
 );
+CREATE TABLE IF NOT EXISTS path_switch (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    old_prefix  TEXT NOT NULL,
+    new_prefix  TEXT NOT NULL,
+    switched_at TEXT NOT NULL
+);
 """
 
 DEFAULT_RULES = {"min_snapshots": 0, "protect_days": 0}
@@ -60,6 +66,10 @@ DEFAULT_RULES = {"min_snapshots": 0, "protect_days": 0}
 def init_db(path: str) -> None:
     conn = sqlite3.connect(path)
     try:
+        # WAL: 读事务不阻塞写事务, 且读方始终看到一致的一代数据,
+        # 目录换址期间的在途查询不会读到"半切换"的清单。
+        if path != ":memory:":
+            conn.execute("PRAGMA journal_mode = WAL")
         conn.executescript(SCHEMA)
         conn.commit()
     finally:
@@ -67,10 +77,19 @@ def init_db(path: str) -> None:
 
 
 def connect(path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+def begin(conn, write: bool = False) -> None:
+    """开启请求级事务,保证一次查询/计算只看到换址前或换址后的一整套数据。
+
+    WAL 模式下读事务冻结读取快照;写事务(BEGIN IMMEDIATE)与目录切换互斥。
+    """
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE" if write else "BEGIN")
 
 
 # ---------------------------------------------------------------- snapshots
@@ -215,10 +234,12 @@ def get_plan(conn, plan_id: str):
     return plan_obj(row) if row else None
 
 
-def list_plans(conn, limit: int = 50) -> list[dict]:
-    rows = conn.execute(
-        "SELECT * FROM plans ORDER BY created_at DESC, rowid DESC LIMIT ?", (limit,)
-    ).fetchall()
+def list_plans(conn, limit: int | None = 50) -> list[dict]:
+    sql = "SELECT * FROM plans ORDER BY created_at DESC, rowid DESC"
+    if limit is None:
+        rows = conn.execute(sql).fetchall()
+    else:
+        rows = conn.execute(sql + " LIMIT ?", (limit,)).fetchall()
     return [plan_obj(r) for r in rows]
 
 
@@ -239,3 +260,24 @@ def plan_obj(row: sqlite3.Row) -> dict:
         "payload": json.loads(row["payload_json"]),
         "confirmed_at": row["confirmed_at"],
     }
+
+
+# -------------------------------------------------------------- path switch
+
+def get_path_switch(conn) -> dict | None:
+    row = conn.execute("SELECT * FROM path_switch WHERE id = 1").fetchone()
+    if row is None:
+        return None
+    return {"old_prefix": row["old_prefix"], "new_prefix": row["new_prefix"],
+            "switched_at": row["switched_at"]}
+
+
+def set_path_switch(conn, old_prefix: str, new_prefix: str, now: str) -> None:
+    conn.execute(
+        "INSERT INTO path_switch (id, old_prefix, new_prefix, switched_at)"
+        " VALUES (1, ?, ?, ?)"
+        " ON CONFLICT(id) DO UPDATE SET"
+        "   old_prefix=excluded.old_prefix, new_prefix=excluded.new_prefix,"
+        "   switched_at=excluded.switched_at",
+        (old_prefix, new_prefix, now),
+    )

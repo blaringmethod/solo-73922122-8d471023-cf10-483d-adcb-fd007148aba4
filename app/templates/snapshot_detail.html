@@ -6,6 +6,11 @@
   · 创建于 {{ snap.created_at }} · 登记于 {{ snap.uploaded_at }}<br>
   清单摘要 <code>{{ snap.digest }}</code>
 </p>
+{% if switch %}
+<p class="hint">当前目录前缀 <code>{{ switch.old_prefix }}</code> → <code>{{ switch.new_prefix }}</code>
+  (切换于 {{ switch.switched_at }})。本页展示登记表当前路径, 与方案计算使用同一套。
+  已确认的旧方案仍显示其生成时的原路径。</p>
+{% endif %}
 <h2>文件与分区 ({{ snap.files|length }})</h2>
 <table>
   <tr><th>文件路径</th><th>字节</th><th>分区</th></tr>

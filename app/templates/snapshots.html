@@ -3,6 +3,40 @@
 <h1>快照 manifest ({{ snapshots|length }} / {{ max_snapshots }})</h1>
 
 <section class="panel">
+  <h2>目录换址</h2>
+  {% if switch %}
+  <p>当前已启用目录前缀:
+    <code>{{ switch.old_prefix }}</code> → <code>{{ switch.new_prefix }}</code>
+    <span class="badge ok">已切换</span>
+    <span class="hint">({{ switch.switched_at }})</span>
+  </p>
+  <p class="hint">一个库只启用一对互不包含的目录前缀;之后迟到的旧路径清单会按新路径登记。</p>
+  <form method="post" action="/web/path-switch">
+    <input type="hidden" name="old_prefix" value="{{ switch.old_prefix }}">
+    <input type="hidden" name="new_prefix" value="{{ switch.new_prefix }}">
+    <button type="submit">重提同一对前缀(应提示已切换)</button>
+  </form>
+  {% else %}
+  <p class="hint">数据文件已复制到新目录后,在这里把清单中的旧目录前缀换成新前缀。
+    一个库只启用一对互不包含的目录前缀。核对期间仍可上传、替换、移除清单;
+    切换以生效时已提交的清单为准。</p>
+  <form method="get" action="/path-switch">
+    <label>旧目录前缀 <input type="text" name="old_prefix" placeholder="lake/orders" required></label>
+    <label>新目录前缀 <input type="text" name="new_prefix" placeholder="lake/orders-v2" required></label>
+    <button type="submit">核对清单(不写入)</button>
+  </form>
+  <form method="post" action="/web/path-switch"
+        onsubmit="return confirm('切换会改写全部清单中的旧路径, 并使涉及旧路径的草稿方案过期, 确定?')">
+    <label>旧目录前缀 <input type="text" name="old_prefix" placeholder="lake/orders" required></label>
+    <label>新目录前缀 <input type="text" name="new_prefix" placeholder="lake/orders-v2" required></label>
+    <button class="primary" type="submit">执行切换</button>
+  </form>
+  <p class="hint">若届时已有清单引用新目录, 或转换后出现重复路径, 切换会被拒绝且清单保持原路径。
+    成功后重提同一对前缀会提示已切换。</p>
+  {% endif %}
+</section>
+
+<section class="panel">
   <h2>上传 manifest</h2>
   <form method="post" action="/web/snapshots" enctype="multipart/form-data">
     <label>JSON 文件 <input type="file" name="manifest_file" accept=".json,application/json"></label>
@@ -11,7 +45,8 @@
     </label>
     <button class="primary" type="submit">登记快照</button>
   </form>
-  <p class="hint">重复上传同一 snapshot_id 会替换 manifest 并改变摘要, 使旧方案过期。最多 {{ max_snapshots }} 个。</p>
+  <p class="hint">重复上传同一 snapshot_id 会替换 manifest 并改变摘要, 使旧方案过期。最多 {{ max_snapshots }} 个。
+    {% if switch %}换址后上传旧路径清单会按新前缀登记; 转换后路径重复则退回。{% endif %}</p>
 </section>
 
 {% if snapshots %}
